@@ -1,0 +1,55 @@
+"""
+SiengeDriver — conexão autenticada com a API do Sienge.
+
+Autenticação: HTTP Basic Auth (usuário + senha), conforme api_requester.py
+original. Mantém as mesmas responsabilidades do driver de referência:
+  - Aplicar rate limiting conforme documentação oficial (20 req/min).
+  - Aplicar retry com exponential backoff em falhas transitórias.
+  - Retornar dados brutos (JSON) sem qualquer transformação.
+"""
+import logging
+import os
+from typing import Any
+
+import requests
+from dotenv import load_dotenv
+
+from drivers.base_driver import AuthenticationError, BaseApiDriver
+from settings.sienge_settings import SIENGE_API_CONFIG, SiengeApiConfig
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+
+class SiengeDriver(BaseApiDriver):
+    """Cliente HTTP para a API Sienge (bulk-data, customers, bills, etc.)."""
+
+    def __init__(self, config: SiengeApiConfig = SIENGE_API_CONFIG):
+        super().__init__(config)
+
+    def _build_session(self) -> requests.Session:
+        usuario = os.getenv("USUARIO_SIENGE")
+        senha = os.getenv("SENHA_SIENGE")
+
+        if not usuario or not senha:
+            raise AuthenticationError(
+                "Variáveis USUARIO_SIENGE e SENHA_SIENGE não encontradas no ambiente."
+            )
+
+        session = requests.Session()
+        session.auth = (usuario, senha)
+        session.headers.update({"Content-Type": "application/json"})
+        return session
+
+    # ------------------------------------------------------------------
+    # Métodos de domínio (exemplos — adaptar conforme os fluxos mapeados)
+    # ------------------------------------------------------------------
+
+    def buscar_credor_por_cnpj(self, cnpj: str) -> Any:
+        """Consulta se já existe um credor cadastrado com o CNPJ informado."""
+        return self.get("v1/creditors", params={"cnpj": cnpj})
+
+    def cadastrar_credor(self, payload: dict) -> Any:
+        """Cadastra um novo credor no Sienge, caso ainda não exista."""
+        return self.post("v1/creditors", json=payload)

@@ -50,6 +50,17 @@ class SiengeDriver(BaseApiDriver):
         """Consulta se já existe um credor cadastrado com o CNPJ informado."""
         return self.get("v1/creditors", params={"cnpj": cnpj})
 
-    def cadastrar_credor(self, payload: dict) -> Any:
-        """Cadastra um novo credor no Sienge, caso ainda não exista."""
-        return self.post("v1/creditors", json=payload)
+    def resolver_supplier_id(self, cnpj: str) -> int:
+        """Busca o fornecedor pelo CNPJ e retorna o ID interno do Sienge."""
+        resultado = self.buscar_credor_por_cnpj(cnpj)
+        if not resultado:
+            raise ValueError(f"Fornecedor com CNPJ {cnpj} não encontrado no Sienge.")
+        # TODO: confirmar o nome exato do campo de ID na resposta real do Sienge
+        return resultado["results"][0]["id"] if "results" in resultado else resultado["id"]
+
+    def cadastrar_nota_fiscal_compra(self, payload: dict) -> Any:
+        """
+        Cadastra uma nota fiscal de compra no Sienge (passo 1 — dados principais).
+        Endpoint: POST /v1/purchase-invoices
+        """
+        return self.post("v1/purchase-invoices", json=payload)

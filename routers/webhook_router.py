@@ -1,17 +1,17 @@
 """
-Endpoint que recebe o webhook disparado pelo Homes na transição de uma
-tarefa, consulta/cadastra no Sienge, e retorna a resposta preenchendo
-campos e avançando a tarefa no Homes.
+Endpoint que recebe o webhook disparado pelo Homes na transição da tarefa
+"Central de Lançamento | Registrar NF", e cadastra o passo 1 da nota
+fiscal de compra no Sienge (POST /v1/purchase-invoices).
 
-Fluxo (ver diagrama enviado): Homes → webhook → middleware (este serviço)
-→ Sienge (GET/POST) → middleware decide → Homes (preenche campos e avança).
+Schema confirmado via /webhooks/debug/echo em 18/08 (payload real do Homes).
 """
 import logging
+import random
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from drivers.holmes_driver import HomesDriver
 from drivers.sienge_driver import SiengeDriver
 
 logger = logging.getLogger(__name__)
@@ -19,39 +19,84 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks/homes", tags=["homes"])
 
 
+class HomesAuthor(BaseModel):
+    id: str
+    name: str
+    email: str
+
+
+class HomesDocument(BaseModel):
+    process_document_id: str
+    name: str
+    document_id: Optional[str] = None
+    status: str
+
+
 class HomesTaskWebhook(BaseModel):
     """
-    Payload recebido do Homes na transição de tarefa.
-
-    TODO: ajustar os campos abaixo assim que o mapeamento de fluxos e o
-    contrato real do webhook do Homes estiverem confirmados.
+    Payload real observado no /webhooks/debug/echo.
+    `properties` hoje só traz "CPF/CNPJ" e "Valor da Nota" — os demais
+    campos exigidos pelo Sienge (number, series, companyId,
+    movementTypeId) ainda não estão configurados no processo do Homes.
     """
-    tarefa_id: str
-    cnpj: str
+    id: str
+    author: HomesAuthor
+    created_at: Optional[str] = None
+    properties: Dict[str, Any]
+    documents: List[HomesDocument] = []
+
+    def cnpj(self) -> str:
+        valor = self.properties.get("CPF/CNPJ")
+        if not valor:
+            raise ValueError("Campo 'CPF/CNPJ' não encontrado em properties.")
+        return valor
 
 
-@router.post("/task")
-def processar_task(payload: HomesTaskWebhook):
+@router.post("/registrar-nf")
+def registrar_nota_fiscal(payload: HomesTaskWebhook):
     """
-    Recebe o evento do Homes, verifica/cadastra o credor no Sienge e
-    atualiza a tarefa no Homes com o resultado.
+    Passo 1 apenas: cadastra os dados principais da nota fiscal de compra
+    no Sienge (POST /v1/purchase-invoices).
     """
     sienge = SiengeDriver()
-    homes = HomesDriver()
 
     try:
-        credor = sienge.buscar_credor_por_cnpj(payload.cnpj)
 
-        if not credor:
-            # TODO: confirmar se o Sienge expõe endpoint de cadastro ou
-            # se será necessário RPA (ver ponto de atenção da reunião).
-            credor = sienge.cadastrar_credor({"cnpj": payload.cnpj})
+        supplier_id = sienge.resolver_supplier_id(payload.cnpj())
+        author = payload.author
 
-        resultado = homes.preencher_campos_e_avancar(
-            payload.tarefa_id, {"sienge_credor": credor}
-        )
+        # TODO: os campos abaixo ainda não vêm no payload do Homes.
+        # Precisam ser adicionados como properties no processo, ou
+        # combinados (ex.: companyId fixo por instância/subdomínio).
+
+        print(payload)
+        nf_payload = {
+            "documentId": "NF",  # TODO: obter essa informação no fluxo
+            "number": f"{random.randint(1000, 9999)}",  # TODO: obter essa informação no fluxo
+            "supplierId": supplier_id,
+            "companyId": 1,  # TODO: obter a informação de um campo único do payload, sendo ele o centro de custo ou nome da obra, após ler ele, criar uma função para buscar a empresa dele
+            "notes": (   #TODO: isso pode ser personalizado para preencher da forma desejada
+                f"Lançamento via integração Homes | "
+                f"Processo: {payload.id} | "
+                f"Solicitante: {author.name} | "
+                f"E-mail: {author.email} | "
+                f"Usuário: {author.id}"
+            ),
+        }
+
+        campos_faltando = [k for k, v in nf_payload.items() if v in (None, "")]
+        if campos_faltando:
+            raise ValueError(
+                f"Campos obrigatórios ausentes no payload do Homes: {campos_faltando}"
+            )
+
+        resultado = sienge.cadastrar_nota_fiscal_compra(nf_payload)
         return {"status": "ok", "resultado": resultado}
 
-    except Exception as exc:  # noqa: BLE001 — logar e devolver erro tratável
-        logger.exception("Falha ao processar tarefa %s", payload.tarefa_id)
+    except ValueError as exc:
+        logger.warning("Payload da tarefa %s incompleto: %s", payload.id, exc)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Falha ao registrar NF no Sienge (tarefa %s)", payload.id)
         raise HTTPException(status_code=502, detail=str(exc)) from exc

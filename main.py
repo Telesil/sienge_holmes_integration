@@ -8,7 +8,7 @@ import logging
 
 from fastapi import FastAPI
 
-from routers import webhook_router
+from routers import debug_router, webhook_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -19,6 +19,7 @@ app = FastAPI(
 )
 
 app.include_router(webhook_router.router)
+app.include_router(debug_router.router)
 
 
 @app.get("/health")

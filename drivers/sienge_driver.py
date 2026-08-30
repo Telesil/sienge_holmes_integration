@@ -9,10 +9,13 @@ original. Mantém as mesmas responsabilidades do driver de referência:
 """
 import logging
 import os
+import pathlib
+import re
 from typing import Any
 
 import requests
 from dotenv import load_dotenv
+import pandas as pd
 
 from drivers.base_driver import AuthenticationError, BaseApiDriver
 from settings.sienge_settings import SIENGE_API_CONFIG, SiengeApiConfig
@@ -64,3 +67,20 @@ class SiengeDriver(BaseApiDriver):
         Endpoint: POST /v1/purchase-invoices
         """
         return self.post("v1/purchase-invoices", json=payload)
+
+    def identificar_empresa(self, tl: str) -> int:
+        df_centro_custo = pd.read_csv(
+            pathlib.Path(
+                r'C:\Users\kaua.rodrigo\PycharmProjects\sienge_holmes_integration\drivers\files\referencer\centros_de_custo.csv'
+            ),
+            sep=';'
+        )
+
+        cod_centro_custo = int(''.join(re.findall(r'\d+', tl)))
+
+        empresa = df_centro_custo.loc[
+            df_centro_custo['cod_centro_custo'] == cod_centro_custo,
+            'cod_empresa'
+        ].iloc[0]
+
+        return int(empresa)

@@ -13,7 +13,7 @@ Responsabilidades:
 """
 import logging
 import os
-from typing import Any
+from typing import Any, Optional
 
 import requests
 from dotenv import load_dotenv
@@ -54,13 +54,72 @@ class HomesDriver(BaseApiDriver):
     # Métodos de domínio (exemplos — adaptar após mapeamento dos fluxos)
     # ------------------------------------------------------------------
 
-    def buscar_tarefa(self, tarefa_id: str) -> Any:
-        """Consulta os dados atuais de uma tarefa/processo no Homes."""
-        # TODO: confirmar endpoint exato com o time do Homes.
-        return self.get(f"v1/tasks/{tarefa_id}")
+    def consultar_processo(self, tarefa_id: str) -> Any:
+        """
+        Consulta os dados atuais de uma tarefa/processo no Homes.
 
-    def preencher_campos_e_avancar(self, tarefa_id: str, payload: dict) -> Any:
-        """Preenche campos do processo e avança a tarefa no fluxo do Homes."""
-        # TODO: confirmar contrato de dados (nomes de campo, endpoint de
-        # avanço de etapa) — depende do mapeamento dos fluxos no Homes.
-        return self.patch(f"v1/tasks/{tarefa_id}", json=payload)
+        Retorna o JSON bruto do processo, que deve conter (entre outras
+        coisas) a chave 'current_activities' — usada por fluxo_notas()
+        para localizar a atividade de integração.
+        """
+        # TODO: confirmar endpoint exato com o time do Homes.
+
+        payload = {
+            "return_tasks": True
+        }
+        return self.get(f"https://app-api.holmesdoc.io/v2/processes/{tarefa_id}", params=payload)
+
+    def fluxo_notas(self, tarefa: dict) -> Optional[str]:
+        """
+        Localiza, entre as atividades atuais do processo, a atividade de
+        integração "Central de Lançamento | Registrar NF" (task_id fixo)
+        e retorna o seu id.
+
+        Esse id é necessário depois para chamar persistir_resultado() e
+        gravar de volta no Homes o que aconteceu na tentativa de
+        integração com o Sienge.
+
+        Retorna None se a atividade não estiver mais entre as atividades
+        atuais do processo (ex.: já avançou, ou o processo foi alterado).
+        """
+        atividade_integracao = 'Activity_1ih97f8'
+
+        atividades = tarefa.get('current_activities', [])
+
+
+        for atividade in atividades:
+            if atividade.get('task_id') == atividade_integracao:
+                return atividade.get('id')
+
+        return None
+
+    def persistir_resultado(self, id_atividade: str, result_sienge: Any) -> Any:
+        """
+        Grava de volta na atividade do Homes o resultado da tentativa de
+        integração com o Sienge (sucesso ou erro), para que o time
+        acompanhe o status sem precisar sair da ferramenta.
+
+        Args:
+            id_atividade: id da atividade retornado por fluxo_notas().
+            result_sienge: mensagem/detalhe do resultado a ser exibido
+                no campo do Homes (será convertido para string).
+        """
+
+        print(result_sienge)
+
+
+        print('aquiiii')
+        payload = {
+            "task": {
+                "action_id": "Flow_02yfr8o",
+                "property_values": [
+                    {
+                        "id": "60a98fb0-a2ed-11f1-833d-8b847e0671e5",
+                        "value": str(result_sienge),
+                    }
+                ],
+                "confirm_action": False,
+            }
+        }
+
+        return self.post(f"https://app-api.holmesdoc.io/v1/tasks/{id_atividade}/action", json=payload)

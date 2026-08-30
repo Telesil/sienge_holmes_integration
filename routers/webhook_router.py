@@ -17,8 +17,7 @@ Schema do webhook confirmado via /webhooks/debug/echo em 18/08 (payload
 real do Homes).
 """
 import logging
-import random
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from fastapi import APIRouter
@@ -75,6 +74,33 @@ def _resposta(status_code: int, **kwargs) -> JSONResponse:
     return JSONResponse(status_code=status_code, content=body.model_dump())
 
 
+def _ler_erro_sienge(response: Optional[requests.Response], fallback: str) -> Tuple[Any, str]:
+    """
+    Lê o corpo de uma resposta de erro do Sienge e tenta extrair a
+    mensagem de negócio que ele já devolve (clientMessage, e em segundo
+    lugar developerMessage) — normalmente já é específica e legível
+    (ex.: "nota fiscal X já cadastrada para o credor Y"), então é melhor
+    reaproveitá-la do que reescrever uma mensagem genérica por status
+    HTTP.
+
+    Retorna (corpo_bruto, mensagem) — corpo_bruto vai pro campo `error`
+    da resposta/log (debug completo), mensagem vai pro que o
+    usuário/Homes vê.
+    """
+    corpo: Any = None
+    if response is not None:
+        try:
+            corpo = response.json()
+        except Exception:
+            corpo = response.text
+
+    mensagem = fallback
+    if isinstance(corpo, dict):
+        mensagem = corpo.get("clientMessage") or corpo.get("developerMessage") or fallback
+
+    return corpo, mensagem
+
+
 def _tentar_registrar_nota_fiscal(sienge: SiengeDriver, payload: HomesTaskWebhook) -> Dict[str, Any]:
     """
     Executa o cadastro da nota fiscal no Sienge (passo 1).
@@ -87,34 +113,42 @@ def _tentar_registrar_nota_fiscal(sienge: SiengeDriver, payload: HomesTaskWebhoo
     try:
         supplier_id = sienge.resolver_supplier_id(payload.buscar_campo("CPF/CNPJ"))
         company_id = sienge.identificar_empresa(payload.buscar_campo("Centro de Custo"))
+        number = payload.buscar_campo("Número da Nota")
+        document_id = sienge.resolver_document_id(payload.buscar_campo("Tipo de Nota"))
+
     except ValueError as exc:
-        logger.warning("Tarefa %s: CNPJ ausente/inválido — %s", payload.id, exc)
+        logger.warning("Tarefa %s: campo ausente/inválido — %s", payload.id, exc)
         return dict(
             http_status=422,
             success=False,
             step="validacao_cnpj",
-            message="CPF/CNPJ não informado ou inválido no processo do Homes.",
+            message="Algum campo obrigatório (CPF/CNPJ, empresa, número ou tipo de nota) está ausente ou inválido no processo do Homes.",
             data=None,
             error={"detail": str(exc)},
         )
     except requests.HTTPError as exc:
         status_sienge = exc.response.status_code if exc.response is not None else 502
-        logger.error("Tarefa %s: falha ao consultar fornecedor no Sienge — %s", payload.id, exc)
+        corpo_sienge, mensagem = _ler_erro_sienge(
+            exc.response, "Não foi possível consultar o fornecedor no Sienge."
+        )
+        logger.error(
+            "Tarefa %s: falha ao consultar fornecedor no Sienge (status %s) — %s",
+            payload.id, status_sienge, corpo_sienge,
+        )
         return dict(
             http_status=502,
             success=False,
             step="consulta_fornecedor_sienge",
-            message="Não foi possível consultar o fornecedor no Sienge.",
+            message=mensagem,
             data=None,
-            error={"sienge_status": status_sienge, "detail": str(exc)},
+            error={"sienge_status": status_sienge, "sienge_response": corpo_sienge},
         )
 
     author = payload.author
-
     # --- Etapa 2: montar payload e validar campos obrigatórios ---
     nf_payload = {
-        "documentId": "NF",  # TODO: obter essa informação no fluxo
-        "number": f"{random.randint(1000, 9999)}",  # TODO: obter essa informação no fluxo
+        "documentId": document_id,
+        "number": number,
         "supplierId": supplier_id,
         "companyId": company_id,
         "notes": (
@@ -143,10 +177,9 @@ def _tentar_registrar_nota_fiscal(sienge: SiengeDriver, payload: HomesTaskWebhoo
         resultado = sienge.cadastrar_nota_fiscal_compra(nf_payload)
     except requests.HTTPError as exc:
         status_sienge = exc.response.status_code if exc.response is not None else 502
-        try:
-            corpo_sienge = exc.response.json()
-        except Exception:
-            corpo_sienge = exc.response.text if exc.response is not None else None
+        corpo_sienge, mensagem = _ler_erro_sienge(
+            exc.response, "O Sienge recusou o cadastro da nota fiscal."
+        )
 
         logger.error(
             "Tarefa %s: Sienge recusou o cadastro (status %s) — %s",
@@ -156,7 +189,7 @@ def _tentar_registrar_nota_fiscal(sienge: SiengeDriver, payload: HomesTaskWebhoo
             http_status=502,
             success=False,
             step="cadastro_nota_fiscal_sienge",
-            message="O Sienge recusou o cadastro da nota fiscal.",
+            message=mensagem,
             data=None,
             error={"sienge_status": status_sienge, "sienge_response": corpo_sienge},
         )
@@ -190,31 +223,40 @@ def _tentar_registrar_nota_fiscal(sienge: SiengeDriver, payload: HomesTaskWebhoo
 _MENSAGENS_AMIGAVEIS: Dict[str, str] = {
     "consulta_processo_homes": "Não foi possível consultar os dados do processo no Homes.",
     "busca_atividade_homes": "Não foi possível localizar a etapa de integração dentro do processo.",
-    "validacao_cnpj": "O CPF/CNPJ não foi informado ou está em um formato inválido no processo. "
-                      "Verifique o campo e reenvie.",
-    "consulta_fornecedor_sienge": "Não foi possível localizar o fornecedor no Sienge a partir do CNPJ informado.",
+    "validacao_cnpj": "Algum campo obrigatório do processo está ausente ou em formato inválido "
+                      "(CPF/CNPJ, empresa, número ou tipo de nota). Verifique os campos e reenvie.",
     "validacao_payload_sienge": "Faltam informações obrigatórias para cadastrar a nota fiscal no Sienge.",
-    "cadastro_nota_fiscal_sienge": "O Sienge recusou o cadastro da nota fiscal.",
+    # consulta_fornecedor_sienge e cadastro_nota_fiscal_sienge não
+    # entram aqui de propósito: usam a mensagem real devolvida pelo
+    # Sienge (ver _STEPS_COM_MENSAGEM_SIENGE). Este dict só serve de
+    # fallback caso, por algum motivo, essa mensagem não venha.
 }
+
+
+# Steps em que resultado["message"] já é a mensagem de negócio devolvida
+# pelo próprio Sienge (via _ler_erro_sienge) — nesses casos, usar ela
+# direto é melhor do que reescrever um texto genérico.
+_STEPS_COM_MENSAGEM_SIENGE = {"consulta_fornecedor_sienge", "cadastro_nota_fiscal_sienge"}
 
 
 def _mensagem_amigavel_erro(resultado: Dict[str, Any]) -> str:
     """Traduz o resultado técnico de uma falha numa frase curta e acionável."""
-    base = _MENSAGENS_AMIGAVEIS.get(
-        resultado["step"],
-        "Ocorreu um erro ao processar a integração com o Sienge.",
-    )
-
     erro = resultado.get("error") or {}
     status_sienge = erro.get("sienge_status") if isinstance(erro, dict) else None
 
-    # Complementos específicos por status HTTP, quando fizer sentido —
-    # mantém a frase curta, sem expor URL/payload/stack.
-    if status_sienge == 400:
-        base += " Confira se o CNPJ está completo e corretamente formatado (14 dígitos)."
-    elif status_sienge == 404:
-        base += " Verifique se o fornecedor/dado está cadastrado no Sienge."
-    elif isinstance(status_sienge, int) and status_sienge >= 500:
+    if resultado["step"] in _STEPS_COM_MENSAGEM_SIENGE and resultado.get("message"):
+        base = resultado["message"]
+    else:
+        base = _MENSAGENS_AMIGAVEIS.get(
+            resultado["step"],
+            "Ocorreu um erro ao processar a integração com o Sienge.",
+        )
+
+    # Erro 5xx normalmente é indisponibilidade do Sienge, não uma regra
+    # de negócio — vale complementar mesmo quando já veio uma mensagem
+    # específica, porque nesse caso o clientMessage tende a não existir
+    # ou não ser útil.
+    if isinstance(status_sienge, int) and status_sienge >= 500:
         base += " O Sienge parece estar indisponível no momento — tente novamente em alguns minutos."
 
     return base

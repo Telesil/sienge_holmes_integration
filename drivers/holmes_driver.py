@@ -87,6 +87,8 @@ class HomesDriver(BaseApiDriver):
         atividades = tarefa.get('current_activities', [])
 
 
+        print(atividades)
+
         for atividade in atividades:
             if atividade.get('task_id') == atividade_integracao:
                 return atividade.get('id')
@@ -105,10 +107,6 @@ class HomesDriver(BaseApiDriver):
                 no campo do Homes (será convertido para string).
         """
 
-        print(result_sienge)
-
-
-        print('aquiiii')
         payload = {
             "task": {
                 "action_id": "Flow_02yfr8o",

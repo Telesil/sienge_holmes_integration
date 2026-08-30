@@ -9,15 +9,16 @@ original. Mantém as mesmas responsabilidades do driver de referência:
 """
 import logging
 import os
-import pathlib
-import re
 from typing import Any
+from pathlib import Path
+import re
 
 import requests
 from dotenv import load_dotenv
 import pandas as pd
 
 from drivers.base_driver import AuthenticationError, BaseApiDriver
+from drivers.utils.sienge_document_types import resolver_document_id as resolver_document_id_tabela
 from settings.sienge_settings import SIENGE_API_CONFIG, SiengeApiConfig
 
 load_dotenv()
@@ -61,6 +62,15 @@ class SiengeDriver(BaseApiDriver):
         # TODO: confirmar o nome exato do campo de ID na resposta real do Sienge
         return resultado["results"][0]["id"] if "results" in resultado else resultado["id"]
 
+    def resolver_document_id(self, tipo_nota_homes: str) -> str:
+        """
+        Traduz o "Tipo de Nota" enviado pelo Homes (descrição, ex.:
+        "Nota Fiscal") para a sigla que o Sienge espera em `documentId`
+        (ex.: "NF"). Levanta ValueError se a descrição não for
+        reconhecida.
+        """
+        return resolver_document_id_tabela(tipo_nota_homes)
+
     def cadastrar_nota_fiscal_compra(self, payload: dict) -> Any:
         """
         Cadastra uma nota fiscal de compra no Sienge (passo 1 — dados principais).
@@ -69,18 +79,18 @@ class SiengeDriver(BaseApiDriver):
         return self.post("v1/purchase-invoices", json=payload)
 
     def identificar_empresa(self, tl: str) -> int:
+        caminho_base = Path(__file__).parent
+
         df_centro_custo = pd.read_csv(
-            pathlib.Path(
-                r'C:\Users\kaua.rodrigo\PycharmProjects\sienge_holmes_integration\drivers\files\referencer\centros_de_custo.csv'
-            ),
-            sep=';'
+            caminho_base / "files" / "referencer" / "centros_de_custo.csv",
+            sep=";"
         )
 
-        cod_centro_custo = int(''.join(re.findall(r'\d+', tl)))
+        cod_centro_custo = int("".join(re.findall(r"\d+", tl)))
 
         empresa = df_centro_custo.loc[
-            df_centro_custo['cod_centro_custo'] == cod_centro_custo,
-            'cod_empresa'
+            df_centro_custo["cod_centro_custo"] == cod_centro_custo,
+            "cod_empresa"
         ].iloc[0]
 
         return int(empresa)

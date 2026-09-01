@@ -86,11 +86,8 @@ class HomesDriver(BaseApiDriver):
 
         atividades = tarefa.get('current_activities', [])
 
-
-        print(atividades)
-
         for atividade in atividades:
-            if atividade.get('task_id') == atividade_integracao:
+            if atividade.get('task_id') == atividade_integracao and atividade.get('status') == 'opened':
                 return atividade.get('id')
 
         return None

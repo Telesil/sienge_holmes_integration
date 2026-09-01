@@ -7,7 +7,7 @@ Homes.
 ## Estrutura
 
 ```
-app/
+sienge_holmes_integration
 ├── main.py                     # orquestrador FastAPI (entrypoint)
 ├── routers/
 │   └── webhook_router.py       # recebe o webhook do Homes e orquestra o fluxo
@@ -43,8 +43,15 @@ Abra o `.env` e preencha `USUARIO_SIENGE`, `SENHA_SIENGE` e `TOKEN_HOMES`.
 
 **3. Subir o servidor**
 
+#### Localmente
 ```bash
-uvicorn app.main:app --reload
+uvicorn main:app --reload
+```
+
+#### Produção
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
 - API disponível em: `http://localhost:8000`

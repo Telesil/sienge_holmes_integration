@@ -1,3 +1,5 @@
 *.env
 *.csv
 *.idea/
+
+!drivers/files/referencer/centros_de_custo.csv

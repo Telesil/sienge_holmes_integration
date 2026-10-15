@@ -24,8 +24,27 @@ class AuthenticationError(Exception):
     """Credenciais ausentes ou inválidas."""
 
 
-class RateLimitError(Exception):
-    """Limite de requisições da API atingido após todos os retries."""
+class ApiUnavailableError(Exception):
+    """
+    A API externa não respondeu de forma utilizável após todos os retries
+    (timeout, falha de conexão ou status 5xx persistente).
+
+    Atributos:
+        url: endpoint chamado.
+        ultimo_status: último HTTP status recebido (None se nem houve resposta).
+        motivo: descrição curta da última falha ("timeout", "conexao", "status 503"...).
+    """
+
+    def __init__(self, mensagem: str, url: str = "", ultimo_status: Optional[int] = None,
+                 motivo: str = ""):
+        super().__init__(mensagem)
+        self.url = url
+        self.ultimo_status = ultimo_status
+        self.motivo = motivo
+
+
+class RateLimitError(ApiUnavailableError):
+    """Limite de requisições da API atingido (429) após todos os retries."""
 
 
 class BaseApiDriver:
@@ -76,6 +95,7 @@ class BaseApiDriver:
 
         Raises:
             RateLimitError: quando 429 persiste após todos os retries.
+            ApiUnavailableError: timeout/conexão/5xx persistentes após os retries.
             requests.HTTPError: para erros HTTP não recuperáveis.
         """
         url = self._build_url(path)
@@ -100,6 +120,8 @@ class BaseApiDriver:
     def _request(self, method: str, url: str, **kwargs) -> Any:
         attempt = 0
         delay = self._config.rate_limit_seconds
+        ultimo_status: Optional[int] = None
+        motivo = ""
 
         while attempt <= self._config.max_retries:
             try:
@@ -108,6 +130,7 @@ class BaseApiDriver:
                 )
 
                 if response.status_code == 429:
+                    ultimo_status, motivo = 429, "rate limit (429)"
                     wait = self._retry_after(response, delay)
                     logger.warning(
                         "Rate limit atingido em %s. Aguardando %.1fs (retry %d/%d).",
@@ -119,6 +142,7 @@ class BaseApiDriver:
                     continue
 
                 if response.status_code in RETRYABLE_STATUS:
+                    ultimo_status, motivo = response.status_code, f"status {response.status_code}"
                     logger.warning(
                         "Status %d em %s. Retry %d/%d em %.1fs.",
                         response.status_code, url, attempt + 1,
@@ -133,6 +157,7 @@ class BaseApiDriver:
                 return response.json() if response.content else None
 
             except requests.Timeout:
+                ultimo_status, motivo = None, "timeout"
                 logger.warning(
                     "Timeout em %s. Retry %d/%d em %.1fs.",
                     url, attempt + 1, self._config.max_retries, delay,
@@ -141,9 +166,23 @@ class BaseApiDriver:
                 attempt += 1
                 delay *= self._config.retry_backoff_factor
 
-        raise RateLimitError(
-            f"Máximo de retries ({self._config.max_retries}) atingido para: {url}"
+            except requests.ConnectionError as exc:
+                # Queda de conexão / DNS / reset — também é transitório.
+                ultimo_status, motivo = None, "falha de conexão"
+                logger.warning(
+                    "Falha de conexão em %s (%s). Retry %d/%d em %.1fs.",
+                    url, exc, attempt + 1, self._config.max_retries, delay,
+                )
+                time.sleep(delay)
+                attempt += 1
+                delay *= self._config.retry_backoff_factor
+
+        mensagem = (
+            f"Máximo de retries ({self._config.max_retries}) atingido para {url} "
+            f"(última falha: {motivo or 'desconhecida'})."
         )
+        excecao = RateLimitError if ultimo_status == 429 else ApiUnavailableError
+        raise excecao(mensagem, url=url, ultimo_status=ultimo_status, motivo=motivo)
 
     # ------------------------------------------------------------------
     # Helpers

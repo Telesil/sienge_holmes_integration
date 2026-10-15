@@ -52,3 +52,24 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "error": {"detalhes": exc.errors()},
         },
     )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """
+    Rede de segurança: qualquer exceção não tratada nos endpoints volta no
+    formato padronizado (em vez de um 500 em texto puro), com o tipo do
+    erro para facilitar o diagnóstico. O traceback completo vai para o log.
+    """
+    logger.exception("Erro não tratado em %s", request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "http_status": 500,
+            "step": "erro_interno",
+            "message": "Ocorreu um erro inesperado na integração.",
+            "data": None,
+            "error": {"tipo": type(exc).__name__, "detail": str(exc)},
+        },
+    )

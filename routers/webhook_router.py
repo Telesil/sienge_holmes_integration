@@ -217,7 +217,7 @@ def _registrar_nota_fiscal(payload: HomesTaskWebhook) -> Dict[str, Any]:
     with _etapa("validacao_campos_homes", "homes",
                 "Algum campo obrigatório do processo está ausente."):
         documento_fornecedor = payload.buscar_campo("CPF/CNPJ")
-        centro_custo = payload.buscar_campo("Centro de Custo")
+        centro_custo = payload.buscar_campo("Centro de Custo/ Obra")
         number = payload.buscar_campo("Número da Nota")
         tipo_nota = payload.buscar_campo("Tipo de Nota")
 

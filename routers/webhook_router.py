@@ -74,11 +74,37 @@ class HomesTaskWebhook(BaseModel):
     properties: Dict[str, Any]
     documents: List[HomesDocument] = []
 
-    def buscar_campo(self, nome_campo: str) -> str:
-        valor = self.properties.get(nome_campo)
-        if valor is None or not str(valor).strip():
-            raise ValueError(f"Campo '{nome_campo}' não preenchido no processo do Homes.")
-        return str(valor).strip()
+    @staticmethod
+    def _normalizar_chave(chave: str) -> str:
+        """Ignora maiúsculas/minúsculas e espaços (ex.: 'Centro de Custo/ Obra' == 'centro de custo/obra')."""
+        return "".join(str(chave).split()).lower()
+
+    def buscar_campo(self, nome_campo: str, *alternativos: str) -> str:
+        """
+        Busca o valor de um campo do processo. Se o nome principal não
+        existir ou estiver vazio, tenta os nomes alternativos na ordem.
+        Por último, tenta casar os nomes ignorando espaços e maiúsculas.
+        """
+        nomes = [nome_campo, *alternativos]
+
+        # 1) Busca exata, na ordem informada
+        for nome in nomes:
+            valor = self.properties.get(nome)
+            if valor is not None and str(valor).strip():
+                return str(valor).strip()
+
+        # 2) Busca tolerante (sem espaços / case-insensitive)
+        alvos = {self._normalizar_chave(n) for n in nomes}
+        for chave, valor in self.properties.items():
+            if self._normalizar_chave(chave) in alvos and valor is not None and str(valor).strip():
+                logger.info("Campo '%s' encontrado pela chave '%s'.", nome_campo, chave)
+                return str(valor).strip()
+
+        tentativas = ", ".join(f"'{n}'" for n in nomes)
+        raise ValueError(
+            f"Campo '{nome_campo}' não preenchido no processo do Homes. "
+            f"(nomes consultados: {tentativas})"
+        )
 
 
 # ----------------------------------------------------------------------
@@ -217,7 +243,10 @@ def _registrar_nota_fiscal(payload: HomesTaskWebhook) -> Dict[str, Any]:
     with _etapa("validacao_campos_homes", "homes",
                 "Algum campo obrigatório do processo está ausente."):
         documento_fornecedor = payload.buscar_campo("CPF/CNPJ")
-        centro_custo = payload.buscar_campo("Centro de Custo/ Obra")
+        centro_custo = payload.buscar_campo(
+            "Centro de Custo/ Obra",
+            "Centro de Custo"
+        )
         number = payload.buscar_campo("Número da Nota")
         tipo_nota = payload.buscar_campo("Tipo de Nota")
 
